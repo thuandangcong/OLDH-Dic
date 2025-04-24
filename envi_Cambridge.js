@@ -1,14 +1,13 @@
 /* global api */
-class envi_Cambridge {
+class encn_Cambridge {
     constructor(options) {
         this.options = options;
-        this.maxexample = 2; // Số lượng ví dụ tối đa
+        this.maxexample = 2;
         this.word = '';
     }
 
     async displayName() {
-        // Cập nhật tên hiển thị cho phù hợp
-        return 'Cambridge EN->VI Dictionary';
+        return 'Từ điển Cambridge Anh - Việt';
     }
 
     setOptions(options) {
@@ -18,160 +17,191 @@ class envi_Cambridge {
 
     async findTerm(word) {
         this.word = word;
-        // Chỉ gọi hàm findCambridge, loại bỏ findYoudao
-        let results = await this.findCambridge(word);
-        return results.filter(x => x); // Lọc kết quả rỗng (nếu có)
+        let promises = [this.findCambridge(word), this.findYoudao(word)];
+        let results = await Promise.all(promises);
+        return [].concat(...results).filter(x => x);
     }
 
     async findCambridge(word) {
         let notes = [];
         if (!word) return notes;
 
-        // Hàm tiện ích để lấy text, giữ nguyên
         function T(node) {
-            if (!node) return '';
-            return node.innerText.trim();
+            return node ? node.innerText.trim() : '';
         }
 
-        // Thay đổi URL sang từ điển Anh-Việt
-        let base = 'https://dictionary.cambridge.org/dictionary/english-vietnamese/';
-        let url = base + encodeURIComponent(word); // Thay khoảng trắng bằng gạch nối theo URL Cambridge
+        let base = 'https://dictionary.cambridge.org/search/english-chinese-simplified/direct/?q=';
+        let url = base + encodeURIComponent(word);
         let doc = '';
         try {
             let data = await api.fetch(url);
             let parser = new DOMParser();
             doc = parser.parseFromString(data, 'text/html');
         } catch (err) {
-            console.error("Lỗi khi fetch hoặc parse trang Cambridge:", err);
-            return []; // Trả về mảng rỗng nếu có lỗi
+            return [];
         }
 
-        // Sử dụng selector phù hợp với trang Cambridge (có thể cần kiểm tra lại)
-        // Selector gốc là '.pr .entry-body__el', cần kiểm tra xem có áp dụng cho trang EN-VI không
-        // Thử dùng selector chung hơn cho các khối mục từ
-        let entries = doc.querySelectorAll('.pr.entry-body__el') || doc.querySelectorAll('.entry-body__el');
-        if (!entries || entries.length === 0) {
-             // Thử selector khác nếu không tìm thấy
-             entries = doc.querySelectorAll('.entry'); // Selector dự phòng
-        }
-
-
+        let entries = doc.querySelectorAll('.pr .entry-body__el') || [];
         for (const entry of entries) {
             let definitions = [];
             let audios = [];
 
-            // Lấy từ chính (headword)
-            let expression = T(entry.querySelector('.headword .hw')) || T(entry.querySelector('.hw.dhw')) || word; // Thử nhiều selector
-
-            // Lấy phiên âm và audio (giữ nguyên logic nhưng cập nhật selector nếu cần)
+            let expression = T(entry.querySelector('.headword'));
             let reading = '';
-            let readings = entry.querySelectorAll('.pron .ipa'); // Giữ nguyên selector gốc, kiểm tra lại nếu cần
-            if (readings && readings.length > 0) {
+            let readings = entry.querySelectorAll('.pron .ipa');
+            if (readings) {
                 let reading_uk = T(readings[0]);
-                let reading_us = T(readings[1]); // Có thể không có đủ 2 phiên âm
-                reading = reading_uk || reading_us ? `UK[${reading_uk}] US[${reading_us}]`.replace('[]', '').trim() : '';
+                let reading_us = T(readings[1]);
+                reading = (reading_uk || reading_us) ? `UK[${reading_uk}] US[${reading_us}] ` : '';
             }
-
-            let pos = T(entry.querySelector('.posgram')) || T(entry.querySelector('.pos.dpos')); // Thử selector POS
+            let pos = T(entry.querySelector('.posgram'));
             pos = pos ? `<span class='pos'>${pos}</span>` : '';
+            audios[0] = entry.querySelector(".uk.dpron-i source");
+            audios[0] = audios[0] ? 'https://dictionary.cambridge.org' + audios[0].getAttribute('src') : '';
+            audios[1] = entry.querySelector(".us.dpron-i source");
+            audios[1] = audios[1] ? 'https://dictionary.cambridge.org' + audios[1].getAttribute('src') : '';
 
-            // Lấy audio (giữ nguyên logic selector, thay đổi base URL)
-             let audioUKNode = entry.querySelector(".uk.dpron-i source[type='audio/mpeg']"); // Tìm source mp3
-             audios[0] = audioUKNode ? 'https://dictionary.cambridge.org' + audioUKNode.getAttribute('src') : '';
-             let audioUSNode = entry.querySelector(".us.dpron-i source[type='audio/mpeg']"); // Tìm source mp3
-             audios[1] = audioUSNode ? 'https://dictionary.cambridge.org' + audioUSNode.getAttribute('src') : '';
-
-
-            // Tìm các khối nghĩa (sense block)
-            // Selector gốc là '.sense-body', kiểm tra xem có áp dụng không
-            let senseBodies = entry.querySelectorAll('.sense-body') || entry.querySelectorAll('.pr.dsense'); // Thử nhiều selector
-
-            for (const senseBody of senseBodies) {
-                // Tìm các khối định nghĩa bên trong sense-body
-                // Selector gốc là '.def-block', có thể cần thay đổi
-                let defBlocks = senseBody.querySelectorAll('.def-block') || senseBody.querySelectorAll('.def.ddef_d.db'); // Thử nhiều selector
-
-                for (const defBlock of defBlocks) {
-                    // Lấy định nghĩa tiếng Anh
-                    // Selector gốc: '.ddef_h .def'
-                    let eng_tran = T(defBlock.querySelector('.ddef_h .def')) || T(defBlock.querySelector('.def.ddef_d.db'));
-                    if (!eng_tran) continue; // Bỏ qua nếu không có định nghĩa tiếng Anh
-
-                    // Lấy bản dịch tiếng Việt ***(Giả định selector là '.trans')***
-                    // Selector gốc: '.def-body .trans'
-                    let vie_tran = T(defBlock.querySelector('.def-body .trans')) || T(defBlock.querySelector('.trans.dtrans.dtrans-se.break-cj')); // Thử nhiều selector '.trans'
-                    if (!vie_tran) {
-                        // Nếu không tìm thấy ở vị trí thông thường, thử tìm trong .examp nếu là định nghĩa ngắn gọn
-                        vie_tran = T(defBlock.querySelector('.examp .trans.dtrans.dtrans-se.break-cj'));
+            let sensbodys = entry.querySelectorAll('.sense-body') || [];
+            for (const sensbody of sensbodys) {
+                let sensblocks = sensbody.childNodes || [];
+                for (const sensblock of sensblocks) {
+                    let phrasehead = '';
+                    let defblocks = [];
+                    if (sensblock.classList && sensblock.classList.contains('phrase-block')) {
+                        phrasehead = T(sensblock.querySelector('.phrase-title'));
+                        phrasehead = phrasehead ? `<div class="phrasehead">${phrasehead}</div>` : '';
+                        defblocks = sensblock.querySelectorAll('.def-block') || [];
                     }
+                    if (sensblock.classList && sensblock.classList.contains('def-block')) {
+                        defblocks = [sensblock];
+                    }
+                    if (defblocks.length <= 0) continue;
 
+                    for (const defblock of defblocks) {
+                        let eng_tran = T(defblock.querySelector('.ddef_h .def'));
+                        let vie_tran = T(defblock.querySelector('.def-body .trans'));
+                        if (!eng_tran) continue;
+                        let definition = '';
+                        eng_tran = `<span class='eng_tran'>${eng_tran.replace(RegExp(expression, 'gi'),`<b>${expression}</b>`)}</span>`;
+                        vie_tran = `<span class='vie_tran'>${vie_tran}</span>`;
+                        let tran = `<span class='tran'>${eng_tran}${vie_tran}</span>`;
+                        definition += phrasehead ? `${phrasehead}${tran}` : `${pos}${tran}`;
 
-                    // Tạo HTML cho định nghĩa
-                    let definition = '';
-                    eng_tran = `<span class='eng_tran'>${eng_tran.replace(new RegExp(expression.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'gi'), `<b>${expression}</b>`)}</span>`;
-                    // Chỉ thêm bản dịch Việt nếu có
-                    vie_tran = vie_tran ? `<span class='vie_tran'>${vie_tran}</span>` : '';
-                    let tran = `<span class='tran'>${eng_tran}${vie_tran}</span>`;
-                    // Không còn phrasehead trong logic này, chỉ dùng POS
-                    definition += `${pos}${tran}`;
-
-                    // Lấy ví dụ (Examps)
-                    // Selector gốc: '.def-body .examp'
-                    let examps = defBlock.querySelectorAll('.def-body .examp') || defBlock.querySelectorAll('.examp.dexamp'); // Thử selector ví dụ
-                    if (examps.length > 0 && this.maxexample > 0) {
-                        definition += '<ul class="sents">';
-                        let count = 0;
-                        for (const examp of examps) {
-                            if (count >= this.maxexample) break;
-                            // Lấy câu ví dụ tiếng Anh (Selector gốc: '.eg')
-                            let eng_examp = T(examp.querySelector('.eg'));
-                            // Lấy bản dịch ví dụ tiếng Việt ***(Giả định selector là '.trans')***
-                            let vie_examp = T(examp.querySelector('.trans.dtrans.dtrans-se.break-cj')); // Selector gốc: '.trans'
-
-                            if (eng_examp) { // Chỉ thêm nếu có câu tiếng Anh
-                                eng_examp = eng_examp.replace(new RegExp(expression.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'gi'), `<b>${expression}</b>`);
-                                definition += `<li class='sent'><span class='eng_sent'>${eng_examp}</span>${vie_examp ? `<span class='vie_sent'>${vie_examp}</span>` : ''}</li>`; // Thêm vie_sent nếu có
-                                count++;
+                        let examps = defblock.querySelectorAll('.def-body .examp') || [];
+                        if (examps.length > 0 && this.maxexample > 0) {
+                            definition += '<ul class="sents">';
+                            for (const [index, examp] of examps.entries()) {
+                                if (index > this.maxexample - 1) break;
+                                let eng_examp = T(examp.querySelector('.eg'));
+                                let vie_examp = T(examp.querySelector('.trans'));
+                                definition += `<li class='sent'><span class='eng_sent'>${eng_examp.replace(RegExp(expression, 'gi'),`<b>${expression}</b>`)}</span><span class='vie_sent'>${vie_examp}</span></li>`;
                             }
+                            definition += '</ul>';
                         }
-                        definition += '</ul>';
+                        definition && definitions.push(definition);
                     }
-                    // Chỉ thêm định nghĩa nếu có nội dung hợp lệ
-                    if (definition.replace(/<[^>]*>/g, '').trim()) {
-                        definitions.push(definition);
-                    }
-
                 }
             }
-             // Chỉ thêm mục từ nếu có định nghĩa
-             if (definitions.length > 0) {
-                let css = this.renderCSS();
-                notes.push({
-                    css,
-                    expression,
-                    reading,
-                    definitions,
-                    audios
-                });
-            }
+            let css = this.renderCSS();
+            notes.push({ css, expression, reading, definitions, audios });
         }
         return notes;
     }
 
-    // Hàm findYoudao đã bị xóa
+    async findYoudao(word) {
+        if (!word) return [];
+
+        let base = 'https://dict.youdao.com/w/';
+        let url = base + encodeURIComponent(word);
+        let doc = '';
+        try {
+            let data = await api.fetch(url);
+            let parser = new DOMParser();
+            doc = parser.parseFromString(data, 'text/html');
+            let youdao = getYoudao(doc);
+            let ydtrans = getYDTrans(doc);
+            return [].concat(youdao, ydtrans);
+        } catch (err) {
+            return [];
+        }
+
+        function getYoudao(doc) {
+            let notes = [];
+            let defNodes = doc.querySelectorAll('#phrsListTab .trans-container ul li');
+            if (!defNodes || !defNodes.length) return notes;
+
+            let expression = T(doc.querySelector('#phrsListTab .wordbook-js .keyword'));
+            let reading = '';
+            let readings = doc.querySelectorAll('#phrsListTab .wordbook-js .pronounce');
+            if (readings) {
+                let reading_uk = T(readings[0]);
+                let reading_us = T(readings[1]);
+                reading = (reading_uk || reading_us) ? `${reading_uk} ${reading_us}` : '';
+            }
+
+            let audios = [];
+            audios[0] = `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(expression)}&type=1`;
+            audios[1] = `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(expression)}&type=2`;
+
+            let definition = '<ul class="ec">';
+            for (const defNode of defNodes){
+                let pos = '';
+                let def = T(defNode);
+                let match = /(^.+?\.)\s/gi.exec(def);
+                if (match && match.length > 1){
+                    pos = match[1];
+                    def = def.replace(pos, '');
+                }
+                pos = pos ? `<span class="pos simple">${pos}</span>`:'';
+                definition += `<li class="ec">${pos}<span class="ec_vie">${def}</span></li>`;
+            }
+            definition += '</ul>';
+            let css = `
+                <style>
+                    span.pos  {text-transform:lowercase; font-size:0.9em; margin-right:5px; padding:2px 4px; color:white; background-color:#0d47a1; border-radius:3px;}
+                    span.simple {background-color: #999!important}
+                    ul.ec, li.ec {margin:0; padding:0;}
+                    span.ec_vie { color: #0d47a1; }
+                </style>`;
+            notes.push({ css, expression, reading, definitions: [definition], audios });
+            return notes;
+        }
+
+        function getYDTrans(doc) {
+            let notes = [];
+            let transNode = doc.querySelectorAll('#ydTrans .trans-container p')[1];
+            if (!transNode) return notes;
+
+            let definition = `${T(transNode)}`;
+            let css = `<style>
+                .odh-expression {
+                    font-size: 1em!important;
+                    font-weight: normal!important;
+                }
+            </style>`;
+            notes.push({ css, definitions: [definition] });
+            return notes;
+        }
+
+        function T(node) {
+            return node ? node.innerText.trim() : '';
+        }
+    }
 
     renderCSS() {
-        // Cập nhật CSS để sử dụng lớp vie_tran và vie_sent
-        return `
+        let css = `
             <style>
-                span.pos  {text-transform:lowercase; font-size:0.9em; margin-right:5px; padding:2px 4px; color:white; background-color:#0d47a1; border-radius:3px;}
-                span.tran {margin:0; padding:0;}
-                span.eng_tran {margin-right:3px; padding:0;}
-                span.vie_tran {color:#0d47a1;} /* Đã đổi chn thành vie */
-                ul.sents {font-size:0.8em; list-style:square inside; margin:3px 0;padding:5px;background:rgba(13,71,161,0.1); border-radius:5px;}
-                li.sent  {margin:0; padding:0;}
-                span.eng_sent {margin-right:5px;}
-                span.vie_sent {color:#0d47a1;} /* Đã đổi chn thành vie */
+                div.phrasehead { margin: 2px 0; font-weight: bold; }
+                span.star { color: #FFBB00; }
+                span.pos { text-transform: lowercase; font-size: 0.9em; margin-right: 5px; padding: 2px 4px; color: white; background-color: #0d47a1; border-radius: 3px; }
+                span.tran { margin: 0; padding: 0; }
+                span.eng_tran { margin-right: 3px; padding: 0; }
+                span.vie_tran { color: #0d47a1; }
+                ul.sents { font-size: 0.8em; list-style: square inside; margin: 3px 0; padding: 5px; background: rgba(13,71,161,0.1); border-radius: 5px; }
+                li.sent { margin: 0; padding: 0; }
+                span.eng_sent { margin-right: 5px; }
+                span.vie_sent { color: #0d47a1; }
             </style>`;
+        return css;
     }
 }
